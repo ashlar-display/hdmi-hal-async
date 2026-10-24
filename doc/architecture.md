@@ -113,8 +113,9 @@ src/
 
 ### `scdc::ScdcTransport`
 
-Async version of `hdmi_hal::scdc::ScdcTransport`. Identical semantics; only the
-`fn` keywords become `async fn`.
+Async version of `hdmi_hal::scdc::ScdcTransport`: the same contract, with the `fn`
+keywords becoming `async fn`, and two clauses only async code needs: calls polled
+together from one task (below) and cancellation.
 
 ```rust
 pub trait ScdcTransport {
@@ -123,7 +124,7 @@ pub trait ScdcTransport {
     async fn read(&self, reg: u8) -> Result<u8, Self::Error>;
     async fn write(&mut self, reg: u8, value: u8) -> Result<(), Self::Error>;
 
-    /// One DDC transaction for the whole buffer, or an error. Required.
+    /// One combined transfer for the whole buffer, or an error. Required.
     async fn read_block(&self, reg: u8, buf: &mut [u8]) -> Result<(), Self::Error>;
 }
 
@@ -135,12 +136,22 @@ pub async fn read_block_bytewise<T: ScdcTransport + ?Sized>(
 ) -> Result<(), T::Error> { ... }
 ```
 
-Doc comments should mirror the sync version verbatim, with a note that the trait is the
-async counterpart. That includes `read_block`'s contract (one transaction or an error,
-never split; no snapshot promised; an optional documented length limit; an empty buffer
-is `Ok` with no bus activity; on error the buffer is unspecified; past `0xFF`
-unspecified), restated here rather than linked, since this crate's docs must stand on
-their own for whichever hdmi-hal version it depends on. As in hdmi-hal, `read_block` has
+Doc comments mirror the sync version verbatim, with a note that the trait is the async
+counterpart. That includes `read_block`'s contract (one combined transfer to the layer
+below or an error, never split, a bus driver known to split it named; no snapshot
+promised; a length limit, if any, documented and of at least 16 bytes; an empty buffer is
+`Ok` with no bus activity; on error the buffer is unspecified; past `0xFF` unspecified
+but never a panic) and the trait's "Errors" (usable after an error, or recovery
+documented), restated rather than linked, since this crate's docs must stand on their
+own for whichever hdmi-hal version it depends on.
+
+One clause is added to "One transaction". Calls made at the same time through shared
+references do not interleave on the bus, and in async code such calls can come from one
+task: `join!` polls two futures on the same transport, which needs no `Sync`. A
+transport keeping its bus in a `RefCell` and borrowing it across an `.await` panics on
+the second borrow. The contract says an implementation serializes concurrent calls
+(waits for the bus) and never panics; one that cannot returns an error for the second
+call, and documents it. As in hdmi-hal, `read_block` has
 no default: a per-byte default would let a transport whose author never considered block
 reads tear related registers unnoticed; `read_block_bytewise` makes that choice explicit.
 
@@ -149,7 +160,8 @@ reads tear related registers unnoticed; `read_block_bytewise` makes that choice 
 The one contract the sync trait does not need: an async call can be dropped before it
 completes (a timeout, `select!`), and a sync one cannot. The trait documentation says:
 
-- after a dropped `read` or `read_block`, the buffer's contents are unspecified;
+- a dropped `read` returns nothing, and whether its transaction reached the bus is
+  unknown; after a dropped `read_block`, the contents of `buf` are unspecified;
 - after a dropped `write`, the write may or may not have reached the sink;
 - an implementation **should** leave the transport usable for the next call, recovering
   the bus itself if a transfer was cut short; one that cannot **must** document what a
@@ -178,8 +190,12 @@ backend authors:
 
 - A backend over a blocking API (`spawn_blocking`) reads into a buffer it owns and copies
   into `buf`: `&mut [u8]` cannot be lent to another thread.
-- The embassy-nrf DMA hazard is the driver's soundness, which a trait cannot fix; a
-  backend over such a driver reads into a buffer it owns, too.
+- The embassy-nrf DMA hazard is the driver's soundness, which a trait cannot fix. A
+  buffer the backend owns is not enough if it is local to the `async fn`: it is freed
+  with the dropped future while DMA may still write it. A backend over such a driver
+  reads into storage that outlives any in-flight transfer (a field of the transport, or
+  a `'static` buffer), copies into `buf` once the transfer completes, and has the next
+  call wait for or stop the previous DMA before reusing that storage.
 
 ### `phy::HdmiPhy`
 

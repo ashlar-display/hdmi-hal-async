@@ -20,8 +20,6 @@ dependencies = [
 [[package]]
 name = "hdmi-hal"
 version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "571c6d7a6d657cc0f766f0c80e27e4e9dbcbe76c77adf608ca5dae5db0dcaab1"
 dependencies = [
  "display-types",
 ]

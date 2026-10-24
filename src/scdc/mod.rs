@@ -1,7 +1,9 @@
 /// Async raw register access to the SCDC register map over DDC/I²C.
 ///
-/// This is the async counterpart to `hdmi_hal::scdc::ScdcTransport`. The trait
-/// contract is identical; only the method signatures gain `async`.
+/// This is the async counterpart to `hdmi_hal::scdc::ScdcTransport`, with the same
+/// contract, restated here, and two clauses only async code needs: calls made at the same
+/// time from one task (in [`read_block`](Self::read_block)'s "One transaction") and
+/// [Cancellation](#cancellation).
 ///
 /// SCDC is a bidirectional channel used for FRL link training initiation, scrambling
 /// control, and CED (Character Error Detection) reporting. Any code that needs to touch
@@ -14,17 +16,18 @@
 /// Every method is required. A transport that can read several registers in one DDC/I²C
 /// transaction implements [`read_block`](Self::read_block) with that transaction; one
 /// that cannot implements it with [`read_block_bytewise`], so the choice is visible in its
-/// code:
+/// code. Here, a bus that can read only one register per transaction:
 ///
 /// ```
 /// use core::convert::Infallible;
 /// use hdmi_hal_async::scdc::{ScdcTransport, read_block_bytewise};
 ///
-/// struct SimulatedScdc {
-///     registers: [u8; 256],
+/// /// A bus whose controller reads one register per transaction.
+/// struct OneRegisterBus {
+///     registers: [u8; 256], // stands in for the sink
 /// }
 ///
-/// impl ScdcTransport for SimulatedScdc {
+/// impl ScdcTransport for OneRegisterBus {
 ///     type Error = Infallible;
 ///
 ///     async fn read(&self, reg: u8) -> Result<u8, Infallible> {
@@ -43,13 +46,26 @@
 /// }
 /// ```
 ///
+/// A simulated sink, a register array that holds still while it is read, conforms with a
+/// plain copy of its registers into `buf` instead.
+///
+/// # Errors
+///
+/// After any method returns an error, an implementation should leave the transport usable
+/// for the next call, recovering the bus itself if a transfer failed midway (for example a
+/// held data line after a NACK). One that cannot says so in its documentation: what an
+/// error leaves behind, and how to recover (for example, by constructing the transport
+/// again).
+///
 /// # Cancellation
 ///
 /// Any of these futures may be dropped before it completes, for example by a
 /// deadline in the caller. What a dropped call has done is then unknown:
 ///
-/// - after a dropped [`read`](Self::read) or [`read_block`](Self::read_block), the
-///   buffer's contents are unspecified;
+/// - a dropped [`read`](Self::read) returns no value, and whether its transaction reached
+///   the bus is unknown;
+/// - after a dropped [`read_block`](Self::read_block), the contents of `buf` are
+///   unspecified;
 /// - after a dropped [`write`](Self::write), the write may or may not have reached the
 ///   sink, so a caller that needs to know reads the register back.
 ///
@@ -75,28 +91,37 @@ pub trait ScdcTransport {
     /// Read consecutive SCDC registers, starting at `reg`, into `buf`.
     ///
     /// Related registers, such as the status flags or the character error counters, are
-    /// read together so that a value the sink updates between two of them cannot be
-    /// read half before and half after the update. The contract:
+    /// read together, in one transaction, so that the transport does not split them;
+    /// whether the sink keeps them consistent during that transaction is the sink's
+    /// (see "No snapshot promised"). The contract:
     ///
     /// - **What it reads.** `buf[i]` is register `reg + i`.
-    /// - **One transaction.** The whole buffer is read in one DDC transaction (the
-    ///   register offset written, a repeated START, `buf.len()` bytes read, STOP), or an
-    ///   error is returned. An implementation never splits the read into several
-    ///   transactions, and never falls back to one register at a time. Calls made at the
-    ///   same time through shared references do not interleave on the bus.
-    ///   [`read_block_bytewise`] is the one exception to both, and a transport that uses
-    ///   it says so.
+    /// - **One transaction.** The whole buffer is read as one combined transfer to the
+    ///   layer below — on the DDC bus, the register offset written, a repeated START,
+    ///   `buf.len()` bytes read, STOP — or an error is returned. An implementation never
+    ///   splits the read into several transfers, and never falls back to one register at
+    ///   a time. Where the layer below is an OS bus driver, the transfer is handed to it
+    ///   whole; a driver known to split it on the wire is named in the transport's
+    ///   documentation, as the bytewise exception is. Calls made at the same time through
+    ///   shared references do not interleave on the bus. That includes calls polled
+    ///   together from one task (`join!`), which reach even a transport that is not
+    ///   `Sync`: an implementation serializes them, waiting for the bus, and never panics
+    ///   (a `RefCell` borrowed across an `.await` would); one that cannot serialize returns
+    ///   an error for the second call instead, and says so. [`read_block_bytewise`] is
+    ///   the one exception to the first two rules, and a transport that uses it says so.
     /// - **No snapshot promised.** One transaction does not mean the sink returns a
     ///   consistent snapshot: whether it holds its registers still during a read is up to
     ///   the sink.
     /// - **Length limit.** An implementation may have a maximum length, if it documents
-    ///   it; a longer buffer is an error, not split. A caller that needs a longer read
-    ///   splits it itself, knowing the parts are separate transactions.
+    ///   it, of at least 16 bytes; a longer buffer is an error, not split. A caller that
+    ///   needs a longer read splits it itself — parts of up to 16 bytes fit every
+    ///   conforming transport — knowing the parts are separate transactions.
     /// - **Empty buffer.** `Ok`, with no bus activity.
-    /// - **On error,** the contents of `buf` are unspecified.
+    /// - **On error,** the contents of `buf` are unspecified (see the trait's "Errors" for
+    ///   the transport itself).
     /// - **Past `0xFF`.** The caller does not read past register `0xFF`. If it does, the
-    ///   result is unspecified: [`read_block_bytewise`] wraps to `0x00`, a real burst
-    ///   read leaves it to the sink.
+    ///   result is unspecified, but the call returns, `Ok` or an error, and never panics:
+    ///   [`read_block_bytewise`] wraps to `0x00`; a real burst read leaves it to the sink.
     async fn read_block(&self, reg: u8, buf: &mut [u8]) -> Result<(), Self::Error>;
 }
 
@@ -281,7 +306,7 @@ mod tests {
     }
 
     #[pollster::test]
-    async fn read_block_reads_consecutive_registers() {
+    async fn bytewise_reads_consecutive_registers() {
         let t = MockTransport::filled();
         let mut buf = [0u8; 3];
         t.read_block(0x40, &mut buf).await.unwrap();
@@ -290,14 +315,14 @@ mod tests {
     }
 
     #[pollster::test]
-    async fn read_block_empty_buffer_reads_nothing() {
+    async fn bytewise_empty_buffer_reads_nothing() {
         let t = MockTransport::filled();
         t.read_block(0x40, &mut []).await.unwrap();
         assert_eq!(t.reads.get(), 0);
     }
 
     #[pollster::test]
-    async fn read_block_stops_at_first_error() {
+    async fn bytewise_stops_at_first_error() {
         let mut t = MockTransport::filled();
         t.fail_at = Some(0x41);
         let mut buf = [0u8; 3];
@@ -307,7 +332,7 @@ mod tests {
     }
 
     #[pollster::test]
-    async fn read_block_wraps_past_0xff() {
+    async fn bytewise_wraps_past_0xff() {
         let t = MockTransport::filled();
         let mut buf = [0u8; 2];
         t.read_block(0xFF, &mut buf).await.unwrap();
@@ -498,7 +523,7 @@ mod tests {
     }
 
     #[pollster::test]
-    async fn send_twin_default_read_block_stops_at_first_error() {
+    async fn send_twin_bytewise_stops_at_first_error() {
         let mut t = SendMockTransport::filled();
         t.fail_at = Some(0x41);
         let mut buf = [0u8; 3];
@@ -511,7 +536,7 @@ mod tests {
     }
 
     #[pollster::test]
-    async fn send_twin_default_read_block_wraps_past_0xff() {
+    async fn send_twin_bytewise_wraps_past_0xff() {
         let t = SendMockTransport::filled();
         let mut buf = [0u8; 2];
         SendScdcTransport::read_block(&t, 0xFF, &mut buf)
@@ -521,7 +546,7 @@ mod tests {
     }
 
     #[pollster::test]
-    async fn send_twin_read_block_override_is_used_through_scdc_transport() {
+    async fn send_twin_read_block_is_used_through_scdc_transport() {
         let mut t = BlockReadingTransport;
         let mut buf = [0u8; 2];
         let (written, read, block) = round_trip_plain(&mut t, &mut buf).await;

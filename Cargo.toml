@@ -17,3 +17,9 @@ display-types = { version = "0.4", default-features = false }
 
 [dev-dependencies]
 pollster = { version = "0.3", features = ["macro"] }
+
+# Temporary, until hdmi-hal with the required `read_block` is published (0.6; the
+# requirement above becomes "0.6" then): replaces it for the whole graph, so this crate is
+# tested against the hdmi-hal it will be released with. Remove before merging.
+[patch.crates-io]
+hdmi-hal = { path = "../hdmi-hal" }
