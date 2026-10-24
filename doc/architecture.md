@@ -294,8 +294,11 @@ Every release is published through a GitHub Actions workflow that signs the `.cr
 package with [SLSA Build Level 2](https://slsa.dev) provenance. Verify with:
 
 ```sh
-gh attestation verify hdmi-hal-async-X.Y.Z.crate --repo DracoWhitefire/hdmi-hal-async
+gh attestation verify hdmi-hal-async-X.Y.Z.crate --repo ashlar-display/hdmi-hal-async
 ```
+
+Releases from before the move to the `ashlar-display` organization verify against the
+previous owner; see "Verifying releases" in the README.
 
 ---
 
