@@ -69,9 +69,11 @@ impl<T: SendHdmiPhy> HdmiPhy for T {
 - **`SendScdcTransport: Send + Sync`**: `read` takes `&self`, and a future holding `&self`
   is only `Send` when the transport is `Sync`. Interior state for reads therefore needs a
   `Sync` type (an atomic or a lock, not a `Cell`).
-- **`read_block`**: the twin has its own default (one `read` per byte, a `Send` future), and
-  the blanket implementation forwards `read_block` as well, so an override is used through
-  either trait.
+- **`read_block`**: required in both traits, and the blanket implementation forwards it, so
+  a twin's `read_block` is used through either trait. `read_block_bytewise` serves both: a
+  twin implementation is an `ScdcTransport` through the blanket implementation, and the
+  helper's future is `Send` for any `T: SendScdcTransport` (a test proves it with a twin
+  generic over another).
 - **Blanket implementations**: every twin implementation is a plain-trait implementation
   too, so it works with code written against `HdmiPhy` or `ScdcTransport`. A type
   implements one of the two; implementing both conflicts with the blanket implementation
@@ -111,8 +113,9 @@ src/
 
 ### `scdc::ScdcTransport`
 
-Async version of `hdmi_hal::scdc::ScdcTransport`. Identical semantics; only the
-`fn` keywords become `async fn`.
+Async version of `hdmi_hal::scdc::ScdcTransport`: the same contract, with the `fn`
+keywords becoming `async fn`, and two clauses only async code needs: calls polled
+together from one task (below) and cancellation.
 
 ```rust
 pub trait ScdcTransport {
@@ -121,13 +124,78 @@ pub trait ScdcTransport {
     async fn read(&self, reg: u8) -> Result<u8, Self::Error>;
     async fn write(&mut self, reg: u8, value: u8) -> Result<(), Self::Error>;
 
-    /// Default: one `read` per byte. Override for a single burst transaction.
-    async fn read_block(&self, reg: u8, buf: &mut [u8]) -> Result<(), Self::Error> { ... }
+    /// One combined transfer for the whole buffer, or an error. Required.
+    async fn read_block(&self, reg: u8, buf: &mut [u8]) -> Result<(), Self::Error>;
 }
+
+/// One `read` per byte: for a transport that cannot burst-read.
+pub async fn read_block_bytewise<T: ScdcTransport + ?Sized>(
+    transport: &T,
+    reg: u8,
+    buf: &mut [u8],
+) -> Result<(), T::Error> { ... }
 ```
 
-Doc comments should mirror the sync version verbatim, with a note that the trait is the
-async counterpart.
+Doc comments mirror the sync version verbatim, with a note that the trait is the async
+counterpart. That includes `read_block`'s contract (one combined transfer to the layer
+below or an error, never split, a bus driver known to split it named; no snapshot
+promised; a length limit, if any, documented and of at least 16 bytes; an empty buffer is
+`Ok` with no bus activity; on error the buffer is unspecified; past `0xFF` unspecified
+but never a panic) and the trait's "Errors" (usable after an error, or recovery
+documented), restated rather than linked, since this crate's docs must stand on their
+own for whichever hdmi-hal version it depends on.
+
+One clause is added to "One transaction". Calls made at the same time through shared
+references do not interleave on the bus, and in async code such calls can come from one
+task: `join!` polls two futures on the same transport, which needs no `Sync`. A
+transport keeping its bus in a `RefCell` and borrowing it across an `.await` panics on
+the second borrow. The contract says an implementation serializes concurrent calls
+(waits for the bus) and never panics; one that cannot returns an error for the second
+call, and documents it. As in hdmi-hal, `read_block` has
+no default: a per-byte default would let a transport whose author never considered block
+reads tear related registers unnoticed; `read_block_bytewise` makes that choice explicit.
+
+#### Cancellation
+
+The one contract the sync trait does not need: an async call can be dropped before it
+completes (a timeout, `select!`), and a sync one cannot. The trait documentation says:
+
+- a dropped `read` returns nothing, and whether its transaction reached the bus is
+  unknown; after a dropped `read_block`, the contents of `buf` are unspecified;
+- after a dropped `write`, the write may or may not have reached the sink;
+- an implementation **should** leave the transport usable for the next call, recovering
+  the bus itself if a transfer was cut short; one that cannot **must** document what a
+  cancelled call leaves behind and how to recover;
+- a caller that needs to stop early checks its deadline before each call instead of
+  dropping one in flight. This is the rule plumbob-async already gives for link training,
+  made the default for every consumer: no transaction is cut short, whatever the
+  transport does.
+
+"Should", not "must", because the async I²C drivers a backend is built on differ, and a
+requirement a backend cannot meet only makes it non-conforming; saying nothing would hide
+the problem instead. What those drivers do with a dropped in-flight transfer (surveyed
+2026-10-19; for the three embassy files, the copy read matched `main`'s blob hash):
+
+| Source | A dropped in-flight transfer | Usable after? |
+|---|---|---|
+| `embedded-hal-async` 1.0.0, `I2c` | Not addressed; the transaction contract covers completed transfers only | unspecified |
+| embassy-rp `src/i2c.rs` (embassy `77f1ee5d3848`) | A drop guard aborts; the next transfer waits for the controller to disable, discards the stale abort, and clears a stuck SDA (up to 9 SCL pulses, then a STOP) | yes, by design |
+| esp-hal `src/i2c/master/mod.rs` (esp-hal `98256807a690`) | Documented: "aborts the transfer, but blocks while the driver finishes clearing and releasing the bus" (cleanup code not seen) | yes, per its docs |
+| embassy-stm32 `src/i2c/v2.rs` (embassy `08332c1b46a2`) | A drop guard clears DMA and interrupt enables and error flags; resets the peripheral only on bus or arbitration errors; sends no STOP | unclear |
+| embassy-nrf `src/twim.rs` (embassy `14c79d365b64`) | No drop guard in the async transaction (the driver's `Drop` has `// TODO: check for abort`); RX DMA targets the caller's buffer, so it can outlive the future | no |
+| Linux, async over the blocking ioctl | The ioctl cannot be cancelled and completes in the background (reasoning, not a source) | yes |
+
+embassy-rp's recover-on-the-next-call is the model for a backend. Two more notes for
+backend authors:
+
+- A backend over a blocking API (`spawn_blocking`) reads into a buffer it owns and copies
+  into `buf`: `&mut [u8]` cannot be lent to another thread.
+- The embassy-nrf DMA hazard is the driver's soundness, which a trait cannot fix. A
+  buffer the backend owns is not enough if it is local to the `async fn`: it is freed
+  with the dropped future while DMA may still write it. A backend over such a driver
+  reads into storage that outlives any in-flight transfer (a field of the transport, or
+  a `'static` buffer), copies into `buf` once the transfer completes, and has the next
+  call wait for or stop the previous DMA before reusing that storage.
 
 ### `phy::HdmiPhy`
 
@@ -211,8 +279,9 @@ Unit tests for a traits-only crate are minimal but still useful. Each trait modu
 `#[cfg(test)]` block with a mock implementor, mirroring `hdmi-hal`: `MockTransport` in
 `scdc` and `MockPhy` in `phy`. That the mocks compile shows the trait signatures are
 well-formed and that `async fn` in traits works end to end; the tests then check the
-calls round-trip (register writes read back, `read_block`'s default, each PHY call
-recorded).
+calls round-trip (register writes read back, `read_block` through `read_block_bytewise`
+on the plain trait, on a twin, on a twin generic over another, and on an unsized
+transport, each PHY call recorded).
 
 The tests run on `pollster` (`#[pollster::test]`), a minimal blocking executor. It is a
 dev-dependency only, so the library stays `no_std` and free of any executor.

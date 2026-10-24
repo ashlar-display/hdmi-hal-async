@@ -12,7 +12,7 @@ keywords = ["ashlar", "hdmi", "no-std", "hal", "async"]
 categories = ["embedded", "hardware-support", "no-std", "no-std::no-alloc", "asynchronous"]
 
 [dependencies]
-hdmi-hal = { version = "0.5.1", default-features = false }
+hdmi-hal = { version = "0.6", default-features = false }
 display-types = { version = "0.4", default-features = false }
 
 [dev-dependencies]

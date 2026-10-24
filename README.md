@@ -51,8 +51,18 @@ impl ScdcTransport for MyAsyncI2cBackend {
 
     async fn read(&self, reg: u8) -> Result<u8, MyError> { /* ... */ }
     async fn write(&mut self, reg: u8, value: u8) -> Result<(), MyError> { /* ... */ }
+
+    // One DDC transaction for the whole buffer (a length limit, if any, of at least
+    // 16 bytes). A backend that cannot burst-read
+    // implements this with `hdmi_hal_async::scdc::read_block_bytewise(self, reg, buf).await`
+    // and says so: its reads are then one register at a time.
+    async fn read_block(&self, reg: u8, buf: &mut [u8]) -> Result<(), MyError> { /* ... */ }
 }
 ```
+
+A future may be dropped before it completes (a timeout, a `select!`); the trait
+documentation says what a transport promises then. To stop early, check the deadline
+before each call rather than dropping a call in flight.
 
 Accept a trait bound in consumer code:
 
@@ -81,6 +91,7 @@ impl SendScdcTransport for MyThreadSafeBackend {
 
     async fn read(&self, reg: u8) -> Result<u8, MyError> { /* ... */ }
     async fn write(&mut self, reg: u8, value: u8) -> Result<(), MyError> { /* ... */ }
+    async fn read_block(&self, reg: u8, buf: &mut [u8]) -> Result<(), MyError> { /* ... */ }
 }
 
 fn spawn_frl_start<T: SendScdcTransport + 'static>(mut transport: T) {
