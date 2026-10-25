@@ -11,15 +11,15 @@
 > **Part of [Ashlar](https://ashlar-display.org)** — a display connection stack in Rust,
 > HDMI 2.1 first: from EDID parsing through mode negotiation to FRL link training.
 >
-> [display-types](https://github.com/DracoWhitefire/display-types) ·
-> [piaf](https://github.com/DracoWhitefire/piaf) ·
-> [concordance](https://github.com/DracoWhitefire/concordance) ·
-> [cartouche](https://github.com/DracoWhitefire/cartouche) ·
-> [culvert](https://github.com/DracoWhitefire/culvert) ·
-> [plumbob](https://github.com/DracoWhitefire/plumbob) ·
-> [hdmi-hal](https://github.com/DracoWhitefire/hdmi-hal) ·
+> [display-types](https://github.com/ashlar-display/display-types) ·
+> [piaf](https://github.com/ashlar-display/piaf) ·
+> [concordance](https://github.com/ashlar-display/concordance) ·
+> [cartouche](https://github.com/ashlar-display/cartouche) ·
+> [culvert](https://github.com/ashlar-display/culvert) ·
+> [plumbob](https://github.com/ashlar-display/plumbob) ·
+> [hdmi-hal](https://github.com/ashlar-display/hdmi-hal) ·
 > **hdmi-hal-async** ·
-> [hdmi-hal-i2c-dev](https://github.com/DracoWhitefire/hdmi-hal-i2c-dev)
+> [hdmi-hal-i2c-dev](https://github.com/ashlar-display/hdmi-hal-i2c-dev)
 
 Async hardware abstraction traits for the HDMI stack.
 
