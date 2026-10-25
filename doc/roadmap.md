@@ -4,7 +4,7 @@
 
 Mirrored from `hdmi-hal`: each item lands there first and here in the same release, with
 the same shape. See `hdmi-hal`'s
-[`doc/roadmap.md`](https://github.com/DracoWhitefire/hdmi-hal/blob/main/doc/roadmap.md)
+[`doc/roadmap.md`](https://github.com/ashlar-display/hdmi-hal/blob/main/doc/roadmap.md)
 for the details.
 
 - **Further PHY configuration** — lane mapping, TMDS pre-emphasis and swing,
