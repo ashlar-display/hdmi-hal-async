@@ -1,12 +1,25 @@
 # hdmi-hal-async
 
-[![CI](https://github.com/DracoWhitefire/hdmi-hal-async/actions/workflows/ci.yml/badge.svg)](https://github.com/DracoWhitefire/hdmi-hal-async/actions/workflows/ci.yml)
+[![CI](https://github.com/ashlar-display/hdmi-hal-async/actions/workflows/ci.yml/badge.svg)](https://github.com/ashlar-display/hdmi-hal-async/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/hdmi-hal-async.svg)](https://crates.io/crates/hdmi-hal-async)
 [![docs.rs](https://docs.rs/hdmi-hal-async/badge.svg)](https://docs.rs/hdmi-hal-async)
 [![License: MPL-2.0](https://img.shields.io/badge/license-MPL--2.0-blue.svg)](LICENSE)
 [![Rust 1.85+](https://img.shields.io/badge/rustc-1.85+-orange.svg)](https://blog.rust-lang.org/2025/02/20/Rust-1.85.0.html)
 [![SLSA Level 2](https://slsa.dev/images/gh-badge-level2.svg)](https://slsa.dev)
 [![trusted publishing only](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fcrates.io%2Fapi%2Fv1%2Fcrates%2Fhdmi-hal-async&query=%24.crate.trustpub_only&label=trusted%20publishing%20only)](#verifying-releases)
+
+> **Part of [Ashlar](https://ashlar-display.org)** — a display connection stack in Rust,
+> HDMI 2.1 first: from EDID parsing through mode negotiation to FRL link training.
+>
+> [display-types](https://github.com/DracoWhitefire/display-types) ·
+> [piaf](https://github.com/DracoWhitefire/piaf) ·
+> [concordance](https://github.com/DracoWhitefire/concordance) ·
+> [cartouche](https://github.com/DracoWhitefire/cartouche) ·
+> [culvert](https://github.com/DracoWhitefire/culvert) ·
+> [plumbob](https://github.com/DracoWhitefire/plumbob) ·
+> [hdmi-hal](https://github.com/DracoWhitefire/hdmi-hal) ·
+> **hdmi-hal-async** ·
+> [hdmi-hal-i2c-dev](https://github.com/DracoWhitefire/hdmi-hal-i2c-dev)
 
 Async hardware abstraction traits for the HDMI stack.
 
@@ -38,8 +51,18 @@ impl ScdcTransport for MyAsyncI2cBackend {
 
     async fn read(&self, reg: u8) -> Result<u8, MyError> { /* ... */ }
     async fn write(&mut self, reg: u8, value: u8) -> Result<(), MyError> { /* ... */ }
+
+    // One DDC transaction for the whole buffer (a length limit, if any, of at least
+    // 16 bytes). A backend that cannot burst-read
+    // implements this with `hdmi_hal_async::scdc::read_block_bytewise(self, reg, buf).await`
+    // and says so: its reads are then one register at a time.
+    async fn read_block(&self, reg: u8, buf: &mut [u8]) -> Result<(), MyError> { /* ... */ }
 }
 ```
+
+A future may be dropped before it completes (a timeout, a `select!`); the trait
+documentation says what a transport promises then. To stop early, check the deadline
+before each call rather than dropping a call in flight.
 
 Accept a trait bound in consumer code:
 
@@ -68,6 +91,7 @@ impl SendScdcTransport for MyThreadSafeBackend {
 
     async fn read(&self, reg: u8) -> Result<u8, MyError> { /* ... */ }
     async fn write(&mut self, reg: u8, value: u8) -> Result<(), MyError> { /* ... */ }
+    async fn read_block(&self, reg: u8, buf: &mut [u8]) -> Result<(), MyError> { /* ... */ }
 }
 
 fn spawn_frl_start<T: SendScdcTransport + 'static>(mut transport: T) {
@@ -77,7 +101,10 @@ fn spawn_frl_start<T: SendScdcTransport + 'static>(mut transport: T) {
 
 A twin implementation is also an implementation of the plain trait, so it works with
 code written against either. Import the trait your code is bounded by: with both in
-scope, method calls on a twin implementation are ambiguous.
+scope, method calls on a twin implementation are ambiguous. Bound generic code by the twin
+alone, as above: adding `+ ScdcTransport` or `+ HdmiPhy`, which the twins imply anyway,
+makes the compiler use that bound instead of the blanket implementation, and the futures
+are no longer known to be `Send`.
 
 ## Stack position
 
@@ -123,11 +150,19 @@ Releases are built on GitHub Actions and attested with
 [GitHub CLI](https://cli.github.com/) and run:
 
 ```sh
-gh attestation verify hdmi-hal-async-X.Y.Z.crate --repo DracoWhitefire/hdmi-hal-async
+gh attestation verify hdmi-hal-async-X.Y.Z.crate --repo ashlar-display/hdmi-hal-async
+```
+
+Releases from before the repository moved to the `ashlar-display` organization (0.2.0 and
+0.2.1) were attested under its previous owner, and verify against it:
+
+```sh
+gh attestation verify hdmi-hal-async-X.Y.Z.crate --owner DracoWhitefire \
+  --signer-repo DracoWhitefire/hdmi-hal-async
 ```
 
 The attested `.crate` is attached to each
-[GitHub release](https://github.com/DracoWhitefire/hdmi-hal-async/releases).
+[GitHub release](https://github.com/ashlar-display/hdmi-hal-async/releases).
 
 Releases from 0.2.0 are uploaded through crates.io
 [trusted publishing](https://rust-lang.github.io/rfcs/3691-trusted-publishing-cratesio.html): the publish

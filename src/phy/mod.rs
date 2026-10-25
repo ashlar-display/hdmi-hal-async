@@ -58,6 +58,10 @@ pub trait HdmiPhy {
 /// has both traits' methods, so with both traits in scope a method call on it is
 /// ambiguous: import only the trait the code is bounded by, or call
 /// `SendHdmiPhy::set_frl_rate(…)`.
+///
+/// Bound generic code by `SendHdmiPhy` alone. Adding `+ HdmiPhy`, which it implies
+/// anyway, makes the compiler use that bound instead of the blanket implementation, and
+/// the futures are no longer known to be `Send`.
 pub trait SendHdmiPhy: Send {
     /// Error type returned by PHY operations.
     type Error: Send;
