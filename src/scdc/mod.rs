@@ -1,3 +1,7 @@
+use core::ops::Deref;
+
+use crate::ddc::{DdcBus, DdcCapabilities, DdcError, SCDC, SendDdcBus};
+
 /// Async raw register access to the SCDC register map over DDC/I²C.
 ///
 /// This is the async counterpart to `hdmi_hal::scdc::ScdcTransport`, with the same
@@ -79,8 +83,11 @@
 /// signal before each call and stop there, rather than dropping a future mid-flight. No
 /// transaction is then cut short, whatever the transport does.
 pub trait ScdcTransport {
-    /// Error type returned by transport operations.
-    type Error;
+    /// Error type returned by transport operations, classified by [`DdcError::kind`]
+    /// (implemented for [`Infallible`](core::convert::Infallible), `()` and
+    /// [`DdcErrorKind`](crate::ddc::DdcErrorKind)). Over a [`DdcBus`], [`ScdcOverDdc`] is the
+    /// transport.
+    type Error: DdcError;
 
     /// Read a single byte from the given SCDC register address.
     async fn read(&self, reg: u8) -> Result<u8, Self::Error>;
@@ -176,8 +183,9 @@ pub async fn read_block_bytewise<T: ScdcTransport + ?Sized>(
 /// implies anyway, makes the compiler use that bound instead of the blanket
 /// implementation, and the futures are no longer known to be `Send`.
 pub trait SendScdcTransport: Send + Sync {
-    /// Error type returned by transport operations.
-    type Error: Send;
+    /// Error type returned by transport operations, classified by [`DdcError::kind`]. Over a
+    /// [`SendDdcBus`], [`SendScdcOverDdc`] is the transport.
+    type Error: DdcError + Send;
 
     /// See [`ScdcTransport::read`].
     fn read(&self, reg: u8) -> impl Future<Output = Result<u8, Self::Error>> + Send;
@@ -224,11 +232,199 @@ impl<T: SendScdcTransport> ScdcTransport for T {
     }
 }
 
+/// Whether a bus with these capabilities can serve SCDC: reach it, write an offset and a
+/// value, and read `min_read` registers after a one-byte offset in one `write_read`.
+fn serves_scdc(caps: &DdcCapabilities, min_read: u16) -> bool {
+    let (write_part, read_part) = caps.write_read_max();
+    caps.reaches(SCDC) && caps.write_max() >= 2 && write_part >= 1 && read_part >= min_read
+}
+
+/// [`ScdcTransport`] over a [`DdcBus`]: the sink's SCDC at [`SCDC`] (0x54).
+///
+/// The async counterpart to `hdmi_hal::scdc::ScdcOverDdc`, with the same behaviour:
+/// [`read`](ScdcTransport::read) and [`read_block`](ScdcTransport::read_block) are one
+/// [`write_read`](DdcBus::write_read) each, [`write`](ScdcTransport::write) one
+/// [`write`](DdcBus::write); `read_block`'s length limit is the bus's read limit for
+/// `write_read`, and the bus refuses a longer read; constructed with
+/// [`bytewise`](Self::bytewise), `read_block` reads one register per transaction
+/// ([`read_block_bytewise`]). It holds a handle to the bus (`&B`, `Rc<B>`, `Arc<B>`), so
+/// other users share the bus. Its errors are the bus's.
+///
+/// It implements [`ScdcTransport`] only. Code bounded by [`SendScdcTransport`] (for example
+/// a client generic over the `Send` twins) takes [`SendScdcOverDdc`]: one generic type
+/// cannot implement both traits, since `SendScdcTransport`'s blanket implementation
+/// already provides `ScdcTransport`. Over a [`SendDdcBus`], this plain adapter's futures are
+/// still `Send` wherever the compiler sees its concrete type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScdcOverDdc<H> {
+    bus: H,
+    bytewise: bool,
+}
+
+impl<H> ScdcOverDdc<H>
+where
+    H: Deref,
+    H::Target: DdcBus,
+{
+    /// SCDC over `bus`, with `read_block` in one transaction; the handle back when the bus
+    /// does not reach [`SCDC`], cannot write an offset and a value, or cannot read 16
+    /// registers after a one-byte offset in one `write_read`.
+    pub fn new(bus: H) -> Result<Self, H> {
+        if serves_scdc(&bus.capabilities(), 16) {
+            Ok(ScdcOverDdc {
+                bus,
+                bytewise: false,
+            })
+        } else {
+            Err(bus)
+        }
+    }
+
+    /// SCDC over `bus`, with `read_block` one register per transaction; the handle back when
+    /// the bus does not reach [`SCDC`], cannot write an offset and a value, or cannot read
+    /// one register after a one-byte offset.
+    pub fn bytewise(bus: H) -> Result<Self, H> {
+        if serves_scdc(&bus.capabilities(), 1) {
+            Ok(ScdcOverDdc {
+                bus,
+                bytewise: true,
+            })
+        } else {
+            Err(bus)
+        }
+    }
+
+    /// Whether `read_block` reads one register per transaction.
+    pub fn is_bytewise(&self) -> bool {
+        self.bytewise
+    }
+
+    /// The bus handle.
+    pub fn into_inner(self) -> H {
+        self.bus
+    }
+}
+
+impl<H> ScdcTransport for ScdcOverDdc<H>
+where
+    H: Deref,
+    H::Target: DdcBus,
+{
+    type Error = <H::Target as DdcBus>::Error;
+
+    async fn read(&self, reg: u8) -> Result<u8, Self::Error> {
+        let mut value = [0u8];
+        self.bus.write_read(SCDC, &[reg], &mut value).await?;
+        Ok(value[0])
+    }
+
+    async fn write(&mut self, reg: u8, value: u8) -> Result<(), Self::Error> {
+        self.bus.write(SCDC, &[reg, value]).await
+    }
+
+    async fn read_block(&self, reg: u8, buf: &mut [u8]) -> Result<(), Self::Error> {
+        if self.bytewise {
+            read_block_bytewise(self, reg, buf).await
+        } else {
+            self.bus.write_read(SCDC, &[reg], buf).await
+        }
+    }
+}
+
+/// [`SendScdcTransport`] over a [`SendDdcBus`]: [`ScdcOverDdc`] for code bounded by the
+/// `Send` twins.
+///
+/// The same behaviour as [`ScdcOverDdc`], implementing [`SendScdcTransport`] (and through
+/// its blanket implementation [`ScdcTransport`]), for a handle that is `Send + Sync` and
+/// dereferences to a [`SendDdcBus`] (`&B`, `Arc<B>`). A client that requires
+/// `SendScdcTransport` of its transport takes this type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SendScdcOverDdc<H> {
+    bus: H,
+    bytewise: bool,
+}
+
+impl<H> SendScdcOverDdc<H>
+where
+    H: Deref + Send + Sync,
+    H::Target: SendDdcBus,
+{
+    /// See [`ScdcOverDdc::new`].
+    pub fn new(bus: H) -> Result<Self, H> {
+        if serves_scdc(&SendDdcBus::capabilities(&*bus), 16) {
+            Ok(SendScdcOverDdc {
+                bus,
+                bytewise: false,
+            })
+        } else {
+            Err(bus)
+        }
+    }
+
+    /// See [`ScdcOverDdc::bytewise`].
+    pub fn bytewise(bus: H) -> Result<Self, H> {
+        if serves_scdc(&SendDdcBus::capabilities(&*bus), 1) {
+            Ok(SendScdcOverDdc {
+                bus,
+                bytewise: true,
+            })
+        } else {
+            Err(bus)
+        }
+    }
+
+    /// Whether `read_block` reads one register per transaction.
+    pub fn is_bytewise(&self) -> bool {
+        self.bytewise
+    }
+
+    /// The bus handle.
+    pub fn into_inner(self) -> H {
+        self.bus
+    }
+}
+
+impl<H> SendScdcTransport for SendScdcOverDdc<H>
+where
+    H: Deref + Send + Sync,
+    H::Target: SendDdcBus,
+{
+    type Error = <H::Target as SendDdcBus>::Error;
+
+    async fn read(&self, reg: u8) -> Result<u8, Self::Error> {
+        let mut value = [0u8];
+        SendDdcBus::write_read(&*self.bus, SCDC, &[reg], &mut value).await?;
+        Ok(value[0])
+    }
+
+    async fn write(&mut self, reg: u8, value: u8) -> Result<(), Self::Error> {
+        SendDdcBus::write(&*self.bus, SCDC, &[reg, value]).await
+    }
+
+    async fn read_block(&self, reg: u8, buf: &mut [u8]) -> Result<(), Self::Error> {
+        if self.bytewise {
+            read_block_bytewise(self, reg, buf).await
+        } else {
+            SendDdcBus::write_read(&*self.bus, SCDC, &[reg], buf).await
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use core::cell::Cell;
     use core::sync::atomic::{AtomicU32, Ordering};
+
+    /// A failed read, carrying its register.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    struct Fail(u8);
+
+    impl DdcError for Fail {
+        fn kind(&self) -> crate::ddc::DdcErrorKind {
+            crate::ddc::DdcErrorKind::Other
+        }
+    }
 
     struct MockTransport {
         registers: [u8; 256],
@@ -256,11 +452,11 @@ mod tests {
     }
 
     impl ScdcTransport for MockTransport {
-        type Error = u8;
+        type Error = Fail;
 
         async fn read(&self, reg: u8) -> Result<u8, Self::Error> {
             if self.fail_at == Some(reg) {
-                return Err(reg);
+                return Err(Fail(reg));
             }
             self.reads.set(self.reads.get() + 1);
             Ok(self.registers[reg as usize])
@@ -326,7 +522,7 @@ mod tests {
         let mut t = MockTransport::filled();
         t.fail_at = Some(0x41);
         let mut buf = [0u8; 3];
-        assert_eq!(t.read_block(0x40, &mut buf).await, Err(0x41));
+        assert_eq!(t.read_block(0x40, &mut buf).await, Err(Fail(0x41)));
         assert_eq!(buf, [0x40, 0x00, 0x00]);
         assert_eq!(t.reads.get(), 1);
     }
@@ -375,11 +571,11 @@ mod tests {
     }
 
     impl SendScdcTransport for SendMockTransport {
-        type Error = u8;
+        type Error = Fail;
 
         async fn read(&self, reg: u8) -> Result<u8, Self::Error> {
             if self.fail_at == Some(reg) {
-                return Err(reg);
+                return Err(Fail(reg));
             }
             self.reads.fetch_add(1, Ordering::Relaxed);
             Ok(self.registers[reg as usize])
@@ -529,7 +725,7 @@ mod tests {
         let mut buf = [0u8; 3];
         assert_eq!(
             SendScdcTransport::read_block(&t, 0x40, &mut buf).await,
-            Err(0x41)
+            Err(Fail(0x41))
         );
         assert_eq!(buf, [0x40, 0x00, 0x00]);
         assert_eq!(t.reads(), 1);
@@ -552,5 +748,250 @@ mod tests {
         let (written, read, block) = round_trip_plain(&mut t, &mut buf).await;
         assert_eq!((written, read, block), (Err(()), Err(()), Ok(())));
         assert_eq!(buf, [0x20, 0x20]);
+    }
+
+    extern crate alloc;
+    use crate::ddc::{DdcErrorKind, EddcTarget};
+    use alloc::rc::Rc;
+    use alloc::sync::Arc;
+    use core::sync::atomic::AtomicU8;
+
+    /// A `Send` DDC bus over an SCDC register file, counting transactions.
+    struct Bus {
+        caps: DdcCapabilities,
+        registers: [AtomicU8; 256],
+        write_reads: AtomicU32,
+        fail: Option<DdcErrorKind>,
+    }
+
+    impl Bus {
+        fn scdc(read_limit: u16) -> Self {
+            Self::with(
+                DdcCapabilities::none()
+                    .with_address_reachable(SCDC, true)
+                    .with_write_max(2)
+                    .with_write_read_max(1, read_limit),
+            )
+        }
+
+        fn with(caps: DdcCapabilities) -> Self {
+            Bus {
+                caps,
+                registers: core::array::from_fn(|i| AtomicU8::new(i as u8)),
+                write_reads: AtomicU32::new(0),
+                fail: None,
+            }
+        }
+    }
+
+    impl SendDdcBus for Bus {
+        type Error = DdcErrorKind;
+
+        fn capabilities(&self) -> DdcCapabilities {
+            self.caps
+        }
+
+        async fn write(&self, _addr: u8, bytes: &[u8]) -> Result<(), DdcErrorKind> {
+            if let Some(kind) = self.fail {
+                return Err(kind);
+            }
+            self.registers[usize::from(bytes[0])].store(bytes[1], Ordering::Relaxed);
+            Ok(())
+        }
+
+        async fn write_read(
+            &self,
+            _addr: u8,
+            bytes: &[u8],
+            buf: &mut [u8],
+        ) -> Result<(), DdcErrorKind> {
+            if let Some(kind) = self.fail {
+                return Err(kind);
+            }
+            if buf.len() > usize::from(self.caps.write_read_max().1) {
+                return Err(DdcErrorKind::Unsupported);
+            }
+            self.write_reads.fetch_add(1, Ordering::Relaxed);
+            for (i, b) in buf.iter_mut().enumerate() {
+                let reg = usize::from(bytes[0].wrapping_add(i as u8));
+                *b = self.registers[reg].load(Ordering::Relaxed);
+            }
+            Ok(())
+        }
+
+        async fn read(&self, _addr: u8, _buf: &mut [u8]) -> Result<(), DdcErrorKind> {
+            Err(DdcErrorKind::Unsupported)
+        }
+
+        async fn read_segmented(
+            &self,
+            _: EddcTarget,
+            _: u8,
+            _: u8,
+            _: &mut [u8],
+        ) -> Result<(), DdcErrorKind> {
+            Err(DdcErrorKind::Unsupported)
+        }
+    }
+
+    /// A client that requires `SendScdcTransport` of its transport, as a client generic over
+    /// the `Send` twins does.
+    struct SendClient<T>(T);
+
+    impl<T: SendScdcTransport> SendClient<T> {
+        fn update_flags(&self) -> impl Future<Output = Result<u8, T::Error>> + Send + '_ {
+            SendScdcTransport::read(&self.0, 0x10)
+        }
+    }
+
+    #[pollster::test]
+    async fn plain_adapter_reads_and_writes_at_0x54() {
+        let bus = Bus::scdc(32);
+        let mut scdc = ScdcOverDdc::new(&bus).ok().unwrap();
+        assert!(!scdc.is_bytewise());
+        scdc.write(0x20, 0x03).await.unwrap();
+        assert_eq!(scdc.read(0x20).await, Ok(0x03));
+        let mut ced = [0u8; 7];
+        scdc.read_block(0x50, &mut ced).await.unwrap();
+        assert_eq!(ced, [0x50, 0x51, 0x52, 0x53, 0x54, 0x55, 0x56]);
+        assert_eq!(bus.write_reads.load(Ordering::Relaxed), 2);
+        assert!(core::ptr::eq(scdc.into_inner(), &bus));
+    }
+
+    #[pollster::test]
+    async fn plain_adapter_bytewise_and_errors() {
+        let bus = Bus::scdc(1);
+        assert!(ScdcOverDdc::new(&bus).is_err());
+        let scdc = ScdcOverDdc::bytewise(&bus).ok().unwrap();
+        assert!(scdc.is_bytewise());
+        let mut buf = [0u8; 3];
+        scdc.read_block(0x40, &mut buf).await.unwrap();
+        assert_eq!(buf, [0x40, 0x41, 0x42]);
+        assert_eq!(bus.write_reads.load(Ordering::Relaxed), 3);
+
+        let mut failing = Bus::scdc(32);
+        failing.fail = Some(DdcErrorKind::Busy);
+        let mut scdc = ScdcOverDdc::new(&failing).ok().unwrap();
+        assert_eq!(scdc.read(0x21).await, Err(DdcErrorKind::Busy));
+        assert_eq!(scdc.write(0x30, 0x01).await, Err(DdcErrorKind::Busy));
+    }
+
+    #[pollster::test]
+    async fn plain_adapter_leaves_reads_beyond_the_bus_limit_to_the_bus() {
+        let bus = Bus::scdc(16);
+        let scdc = ScdcOverDdc::new(&bus).ok().unwrap();
+        let mut long = [0u8; 17];
+        assert_eq!(
+            scdc.read_block(0x00, &mut long).await,
+            Err(DdcErrorKind::Unsupported)
+        );
+    }
+
+    #[pollster::test]
+    async fn adapters_refuse_a_bus_that_cannot_serve_scdc() {
+        let no_scdc = Arc::new(Bus::with(
+            DdcCapabilities::general().with_address_reachable(SCDC, false),
+        ));
+        assert!(ScdcOverDdc::new(&*no_scdc).is_err());
+        assert!(SendScdcOverDdc::new(Arc::clone(&no_scdc)).is_err());
+        assert!(SendScdcOverDdc::bytewise(Arc::clone(&no_scdc)).is_err());
+        let short_reads = Arc::new(Bus::scdc(15));
+        assert!(SendScdcOverDdc::new(Arc::clone(&short_reads)).is_err());
+        assert!(SendScdcOverDdc::bytewise(short_reads).is_ok());
+        let no_reads = Bus::scdc(0);
+        assert!(ScdcOverDdc::bytewise(&no_reads).is_err());
+        let mut buf = [0u8; 1];
+        assert_eq!(
+            SendDdcBus::read(&no_reads, SCDC, &mut buf).await,
+            Err(DdcErrorKind::Unsupported)
+        );
+        assert_eq!(
+            SendDdcBus::read_segmented(&no_reads, EddcTarget::Edid, 0, 0, &mut buf).await,
+            Err(DdcErrorKind::Unsupported)
+        );
+        assert_eq!(Fail(0).kind(), DdcErrorKind::Other);
+    }
+
+    /// Generic over every `SendDdcBus`: the client bounded by `SendScdcTransport` takes the
+    /// `Send` adapter over an `Arc`, and its future is `Send`.
+    fn spawn_client<B: SendDdcBus + 'static>(
+        bus: Arc<B>,
+    ) -> impl Future<Output = Result<u8, B::Error>> + Send {
+        let client = SendClient(SendScdcOverDdc::new(bus).ok().expect("serves SCDC"));
+        async move { client.update_flags().await }
+    }
+
+    #[pollster::test]
+    async fn send_adapter_serves_a_client_bounded_by_the_send_twin() {
+        let bus = Arc::new(Bus::scdc(32));
+        assert_eq!(assert_send(spawn_client(Arc::clone(&bus))).await, Ok(0x10));
+
+        let mut scdc = SendScdcOverDdc::bytewise(Arc::clone(&bus)).ok().unwrap();
+        assert!(scdc.is_bytewise());
+        SendScdcTransport::write(&mut scdc, 0x20, 0x07)
+            .await
+            .unwrap();
+        let mut buf = [0u8; 2];
+        SendScdcTransport::read_block(&scdc, 0x20, &mut buf)
+            .await
+            .unwrap();
+        assert_eq!(buf, [0x07, 0x21]);
+        let whole = SendScdcOverDdc::new(Arc::clone(&bus)).ok().unwrap();
+        assert!(!whole.is_bytewise());
+        SendScdcTransport::read_block(&whole, 0x20, &mut buf)
+            .await
+            .unwrap();
+        assert!(Arc::ptr_eq(&scdc.into_inner(), &bus));
+        assert!(Arc::ptr_eq(&whole.into_inner(), &bus));
+    }
+
+    /// A firmware-style bus that is not `Send`.
+    struct LocalBus(Cell<u8>, DdcCapabilities);
+
+    impl DdcBus for LocalBus {
+        type Error = ();
+        fn capabilities(&self) -> DdcCapabilities {
+            self.1
+        }
+        async fn write(&self, _addr: u8, bytes: &[u8]) -> Result<(), ()> {
+            self.0.set(bytes[1]);
+            Ok(())
+        }
+        async fn write_read(&self, _addr: u8, _bytes: &[u8], buf: &mut [u8]) -> Result<(), ()> {
+            buf.fill(self.0.get());
+            Ok(())
+        }
+        async fn read(&self, _addr: u8, _buf: &mut [u8]) -> Result<(), ()> {
+            Err(())
+        }
+        async fn read_segmented(
+            &self,
+            _: EddcTarget,
+            _: u8,
+            _: u8,
+            _: &mut [u8],
+        ) -> Result<(), ()> {
+            Err(())
+        }
+    }
+
+    #[pollster::test]
+    async fn plain_adapter_shares_a_bus_that_is_not_send() {
+        let serves = DdcCapabilities::none()
+            .with_address_reachable(SCDC, true)
+            .with_write_max(2)
+            .with_write_read_max(1, 16);
+        let refused = Rc::new(LocalBus(Cell::new(0), DdcCapabilities::none()));
+        assert!(ScdcOverDdc::new(refused).is_err());
+        let bus = Rc::new(LocalBus(Cell::new(0), serves));
+        let mut scdc = ScdcOverDdc::new(Rc::clone(&bus)).ok().unwrap();
+        scdc.write(0x20, 0x05).await.unwrap();
+        assert_eq!(scdc.read(0x20).await, Ok(0x05));
+        let mut buf = [0u8; 1];
+        assert_eq!(bus.read(SCDC, &mut buf).await, Err(()));
+        assert_eq!(
+            bus.read_segmented(EddcTarget::Edid, 0, 0, &mut buf).await,
+            Err(())
+        );
     }
 }

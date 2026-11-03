@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking changes
+
+- **`ScdcTransport::Error` is bounded by `DdcError`, and `SendScdcTransport::Error` by
+  `DdcError + Send`**, as in hdmi-hal: every transport error carries a `DdcErrorKind`.
+  `DdcError` is implemented for `Infallible`, `()` and `DdcErrorKind`; a transport with its
+  own error type implements `DdcError::kind` for it.
+
+### Added
+
+- **`ddc` module: the async `DdcBus` and its `Send` twin `SendDdcBus`**, with hdmi-hal's
+  contract (`write`, `write_read`, `read` on any 7-bit address, the E-DDC `read_segmented`,
+  one call one transaction, shared through `&self`) and the cancellation clause the other
+  async traits have: a dropped call leaves the bus usable or the implementation says so, and
+  the contents of `buf` are then unspecified. `capabilities()` is a plain `fn`. hdmi-hal's
+  `DdcError`, `DdcErrorKind`, `NoAcknowledgeSource`, `EddcTarget`, `DdcCapabilities`, the
+  bus's addresses and `is_usable_address` are re-exported from `ddc`. There is no forwarding
+  implementation for `&B`: next to the twin's blanket implementation it would conflict;
+  users share a bus through handles.
+- **`scdc::ScdcOverDdc`**, `ScdcTransport` over a `DdcBus`, and **`scdc::SendScdcOverDdc`**,
+  `SendScdcTransport` over a `SendDdcBus`, for code bounded by the `Send` twins (one generic
+  type cannot implement both traits). Both hold any handle that dereferences to the bus and
+  return it from `new` and `bytewise` when the bus cannot serve SCDC.
+- The crate's scope, as its docs now say: traits and the glue between its own traits; no
+  hardware or platform implementations, no policy, no clocks.
+
 ## [0.3.1] - 2026-11-03
 
 ### Changed
