@@ -61,8 +61,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   users share a bus through handles.
 - **`scdc::ScdcOverDdc`**, `ScdcTransport` over a `DdcBus`, and **`scdc::SendScdcOverDdc`**,
   `SendScdcTransport` over a `SendDdcBus`, for code bounded by the `Send` twins (one generic
-  type cannot implement both traits). Both hold any handle that dereferences to the bus and
-  return it from `new` and `bytewise` when the bus cannot serve SCDC.
+  type cannot implement both traits). Both hold a handle to the bus and return it from `new`
+  and `bytewise` when the bus cannot serve SCDC.
+- **`ddc::DdcHandle` and `ddc::SendDdcHandle`**, handles to a `DdcBus` and a `SendDdcBus`:
+  implemented for every handle that dereferences to such a bus, and by a `Copy` view of a
+  bus for itself, so it is passed by value.
 - The crate's scope, as its docs now say: traits and the glue between its own traits; no
   hardware, platform or clock implementations, no policy. The `time` module's `Delay` is a
   trait, implemented by the platform.

@@ -6,6 +6,8 @@
 //! [`EddcTarget`], [`DdcCapabilities`] and the bus's addresses — is `hdmi-hal`'s,
 //! re-exported here, so an implementation names the same types either crate does.
 
+use core::ops::Deref;
+
 pub use hdmi_hal::ddc::{
     DDC_CI, DISPLAYID, DdcCapabilities, DdcError, DdcErrorKind, EDID, EddcTarget, HDCP_PRIMARY,
     HDCP_SECONDARY, MAX_SEGMENT, NoAcknowledgeSource, SCDC, SEGMENT_POINTER, is_usable_address,
@@ -159,6 +161,56 @@ impl<T: SendDdcBus> DdcBus for T {
         buf: &mut [u8],
     ) -> impl Future<Output = Result<(), Self::Error>> {
         <T as SendDdcBus>::read_segmented(self, target, segment, offset, buf)
+    }
+}
+
+/// A handle to a [`DdcBus`]: what async code that shares the bus holds, as
+/// `hdmi_hal::ddc::DdcHandle` is for the sync one.
+///
+/// Implemented for every handle that dereferences to a bus (`&B`, `Rc<B>`, `Arc<B>`); a
+/// `Copy` view of a bus implements it for itself, so it is passed by value.
+pub trait DdcHandle {
+    /// The bus it is a handle to.
+    type Bus: DdcBus + ?Sized;
+
+    /// The bus.
+    fn bus(&self) -> &Self::Bus;
+}
+
+impl<H> DdcHandle for H
+where
+    H: Deref,
+    H::Target: DdcBus,
+{
+    type Bus = H::Target;
+
+    fn bus(&self) -> &H::Target {
+        self
+    }
+}
+
+/// A handle to a [`SendDdcBus`], itself `Send + Sync`: [`DdcHandle`] for code bounded by the
+/// `Send` twins.
+///
+/// Implemented for every `Send + Sync` handle that dereferences to such a bus (`&B`,
+/// `Arc<B>`); a `Copy` view of a bus implements it for itself.
+pub trait SendDdcHandle: Send + Sync {
+    /// The bus it is a handle to.
+    type Bus: SendDdcBus + ?Sized;
+
+    /// The bus.
+    fn bus(&self) -> &Self::Bus;
+}
+
+impl<H> SendDdcHandle for H
+where
+    H: Deref + Send + Sync,
+    H::Target: SendDdcBus,
+{
+    type Bus = H::Target;
+
+    fn bus(&self) -> &H::Target {
+        self
     }
 }
 

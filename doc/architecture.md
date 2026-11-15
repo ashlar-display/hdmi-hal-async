@@ -272,8 +272,10 @@ async code needs:
 no forwarding implementation for `&B`**: next to the twin's blanket implementation it would
 conflict (E0119), since `&` is a fundamental type and another crate may implement
 `SendDdcBus` for a reference to its own type. Users hold a handle instead: code over the bus
-is generic over `H: Deref<Target: DdcBus>`, so a bus that is not `Send` (embassy's) is
-shared through `&'static B` or `Rc<B>`, and a `SendDdcBus` through `&B` or `Arc<B>`.
+is generic over `ddc::DdcHandle` (or `ddc::SendDdcHandle`, `Send + Sync`), implemented for
+every handle that dereferences to such a bus, so a bus that is not `Send` (embassy's) is
+shared through `&'static B` or `Rc<B>`, and a `SendDdcBus` through `&B` or `Arc<B>`; a
+`Copy` view of a bus implements the handle traits for itself and is passed by value.
 
 #### `ScdcOverDdc` and `SendScdcOverDdc`
 
@@ -287,8 +289,7 @@ It cannot also implement `SendScdcTransport`: the twin's blanket implementation 
 provides `ScdcTransport` for every `SendScdcTransport`, so one generic type implementing both
 conflicts (E0119). Code bounded by the twins, such as a client generic over
 `SendScdcTransport`, therefore takes **`scdc::SendScdcOverDdc<H>`**, which implements
-`SendScdcTransport` (and through the blanket `ScdcTransport`) for a handle that is
-`Send + Sync` and dereferences to a `SendDdcBus`. This is the stack's "second type"
+`SendScdcTransport` (and through the blanket `ScdcTransport`) for a `SendDdcHandle`. This is the stack's "second type"
 pattern. Which to use: `ScdcOverDdc` for plain callers, and for `Send` callers that see the
 concrete type (over a `SendDdcBus`, its futures are `Send` wherever the compiler sees the
 type); `SendScdcOverDdc` where code is bounded by the twins.

@@ -25,8 +25,9 @@ for the details.
   call or says it does not, and the contents of `buf` are then undefined. `capabilities()`
   is a plain `fn`. `scdc::ScdcOverDdc` implements `ScdcTransport` over it, and
   `scdc::SendScdcOverDdc` implements `SendScdcTransport`, for code bounded by the `Send`
-  twins: one generic type cannot implement both (E0119). Both take any handle that
-  dereferences to the bus. No forwarding impl of `DdcBus` for `&B`: next to the twin's
+  twins: one generic type cannot implement both (E0119). Both take a handle to the bus
+  (`ddc::DdcHandle`, `ddc::SendDdcHandle`): anything that dereferences to it, or a `Copy`
+  view that is its own handle. No forwarding impl of `DdcBus` for `&B`: next to the twin's
   blanket impl it would conflict (E0119), so sharing goes through the handle. The
   `DdcError` bound on `ScdcTransport::Error` and its `Send` twin, and re-exports of
   `hdmi-hal`'s `DdcError`, `DdcErrorKind`, `NoAcknowledgeSource`, `EddcTarget` and

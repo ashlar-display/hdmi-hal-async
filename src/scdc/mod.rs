@@ -1,6 +1,4 @@
-use core::ops::Deref;
-
-use crate::ddc::{DdcBus, DdcCapabilities, DdcError, SCDC, SendDdcBus};
+use crate::ddc::{DdcBus, DdcCapabilities, DdcError, DdcHandle, SCDC, SendDdcBus, SendDdcHandle};
 
 /// Async raw register access to the SCDC register map over DDC/I²C.
 ///
@@ -247,8 +245,9 @@ fn serves_scdc(caps: &DdcCapabilities, min_read: u16) -> bool {
 /// [`write`](DdcBus::write); `read_block`'s length limit is the bus's read limit for
 /// `write_read`, and the bus refuses a longer read; constructed with
 /// [`bytewise`](Self::bytewise), `read_block` reads one register per transaction
-/// ([`read_block_bytewise`]). It holds a handle to the bus (`&B`, `Rc<B>`, `Arc<B>`), so
-/// other users share the bus. Its errors are the bus's.
+/// ([`read_block_bytewise`]). It holds a [`DdcHandle`] to the bus (`&B`, `Rc<B>`, `Arc<B>`,
+/// or a `Copy` view that is its own handle), so other users share the bus. Its errors are
+/// the bus's.
 ///
 /// It implements [`ScdcTransport`] only. Code bounded by [`SendScdcTransport`] (for example
 /// a client generic over the `Send` twins) takes [`SendScdcOverDdc`]: one generic type
@@ -261,16 +260,12 @@ pub struct ScdcOverDdc<H> {
     bytewise: bool,
 }
 
-impl<H> ScdcOverDdc<H>
-where
-    H: Deref,
-    H::Target: DdcBus,
-{
+impl<H: DdcHandle> ScdcOverDdc<H> {
     /// SCDC over `bus`, with `read_block` in one transaction; the handle back when the bus
     /// does not reach [`SCDC`], cannot write an offset and a value, or cannot read 16
     /// registers after a one-byte offset in one `write_read`.
     pub fn new(bus: H) -> Result<Self, H> {
-        if serves_scdc(&bus.capabilities(), 16) {
+        if serves_scdc(&bus.bus().capabilities(), 16) {
             Ok(ScdcOverDdc {
                 bus,
                 bytewise: false,
@@ -284,7 +279,7 @@ where
     /// the bus does not reach [`SCDC`], cannot write an offset and a value, or cannot read
     /// one register after a one-byte offset.
     pub fn bytewise(bus: H) -> Result<Self, H> {
-        if serves_scdc(&bus.capabilities(), 1) {
+        if serves_scdc(&bus.bus().capabilities(), 1) {
             Ok(ScdcOverDdc {
                 bus,
                 bytewise: true,
@@ -305,28 +300,24 @@ where
     }
 }
 
-impl<H> ScdcTransport for ScdcOverDdc<H>
-where
-    H: Deref,
-    H::Target: DdcBus,
-{
-    type Error = <H::Target as DdcBus>::Error;
+impl<H: DdcHandle> ScdcTransport for ScdcOverDdc<H> {
+    type Error = <H::Bus as DdcBus>::Error;
 
     async fn read(&self, reg: u8) -> Result<u8, Self::Error> {
         let mut value = [0u8];
-        self.bus.write_read(SCDC, &[reg], &mut value).await?;
+        self.bus.bus().write_read(SCDC, &[reg], &mut value).await?;
         Ok(value[0])
     }
 
     async fn write(&mut self, reg: u8, value: u8) -> Result<(), Self::Error> {
-        self.bus.write(SCDC, &[reg, value]).await
+        self.bus.bus().write(SCDC, &[reg, value]).await
     }
 
     async fn read_block(&self, reg: u8, buf: &mut [u8]) -> Result<(), Self::Error> {
         if self.bytewise {
             read_block_bytewise(self, reg, buf).await
         } else {
-            self.bus.write_read(SCDC, &[reg], buf).await
+            self.bus.bus().write_read(SCDC, &[reg], buf).await
         }
     }
 }
@@ -335,8 +326,8 @@ where
 /// `Send` twins.
 ///
 /// The same behaviour as [`ScdcOverDdc`], implementing [`SendScdcTransport`] (and through
-/// its blanket implementation [`ScdcTransport`]), for a handle that is `Send + Sync` and
-/// dereferences to a [`SendDdcBus`] (`&B`, `Arc<B>`). A client that requires
+/// its blanket implementation [`ScdcTransport`]), for a [`SendDdcHandle`]: a `Send + Sync`
+/// handle to a [`SendDdcBus`] (`&B`, `Arc<B>`, or a `Copy` view that is its own handle). A client that requires
 /// `SendScdcTransport` of its transport takes this type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SendScdcOverDdc<H> {
@@ -344,14 +335,10 @@ pub struct SendScdcOverDdc<H> {
     bytewise: bool,
 }
 
-impl<H> SendScdcOverDdc<H>
-where
-    H: Deref + Send + Sync,
-    H::Target: SendDdcBus,
-{
+impl<H: SendDdcHandle> SendScdcOverDdc<H> {
     /// See [`ScdcOverDdc::new`].
     pub fn new(bus: H) -> Result<Self, H> {
-        if serves_scdc(&SendDdcBus::capabilities(&*bus), 16) {
+        if serves_scdc(&SendDdcBus::capabilities(bus.bus()), 16) {
             Ok(SendScdcOverDdc {
                 bus,
                 bytewise: false,
@@ -363,7 +350,7 @@ where
 
     /// See [`ScdcOverDdc::bytewise`].
     pub fn bytewise(bus: H) -> Result<Self, H> {
-        if serves_scdc(&SendDdcBus::capabilities(&*bus), 1) {
+        if serves_scdc(&SendDdcBus::capabilities(bus.bus()), 1) {
             Ok(SendScdcOverDdc {
                 bus,
                 bytewise: true,
@@ -384,28 +371,24 @@ where
     }
 }
 
-impl<H> SendScdcTransport for SendScdcOverDdc<H>
-where
-    H: Deref + Send + Sync,
-    H::Target: SendDdcBus,
-{
-    type Error = <H::Target as SendDdcBus>::Error;
+impl<H: SendDdcHandle> SendScdcTransport for SendScdcOverDdc<H> {
+    type Error = <H::Bus as SendDdcBus>::Error;
 
     async fn read(&self, reg: u8) -> Result<u8, Self::Error> {
         let mut value = [0u8];
-        SendDdcBus::write_read(&*self.bus, SCDC, &[reg], &mut value).await?;
+        SendDdcBus::write_read(self.bus.bus(), SCDC, &[reg], &mut value).await?;
         Ok(value[0])
     }
 
     async fn write(&mut self, reg: u8, value: u8) -> Result<(), Self::Error> {
-        SendDdcBus::write(&*self.bus, SCDC, &[reg, value]).await
+        SendDdcBus::write(self.bus.bus(), SCDC, &[reg, value]).await
     }
 
     async fn read_block(&self, reg: u8, buf: &mut [u8]) -> Result<(), Self::Error> {
         if self.bytewise {
             read_block_bytewise(self, reg, buf).await
         } else {
-            SendDdcBus::write_read(&*self.bus, SCDC, &[reg], buf).await
+            SendDdcBus::write_read(self.bus.bus(), SCDC, &[reg], buf).await
         }
     }
 }
@@ -993,5 +976,66 @@ mod tests {
             bus.read_segmented(EddcTarget::Edid, 0, 0, &mut buf).await,
             Err(())
         );
+    }
+
+    /// A `Copy` view of the test bus that is its own handle.
+    #[derive(Clone, Copy)]
+    struct View<'a>(&'a Bus);
+
+    impl SendDdcBus for View<'_> {
+        type Error = DdcErrorKind;
+        fn capabilities(&self) -> DdcCapabilities {
+            SendDdcBus::capabilities(self.0)
+        }
+        async fn write(&self, addr: u8, bytes: &[u8]) -> Result<(), DdcErrorKind> {
+            SendDdcBus::write(self.0, addr, bytes).await
+        }
+        async fn write_read(
+            &self,
+            addr: u8,
+            bytes: &[u8],
+            buf: &mut [u8],
+        ) -> Result<(), DdcErrorKind> {
+            SendDdcBus::write_read(self.0, addr, bytes, buf).await
+        }
+        async fn read(&self, addr: u8, buf: &mut [u8]) -> Result<(), DdcErrorKind> {
+            SendDdcBus::read(self.0, addr, buf).await
+        }
+        async fn read_segmented(
+            &self,
+            target: crate::ddc::EddcTarget,
+            segment: u8,
+            offset: u8,
+            buf: &mut [u8],
+        ) -> Result<(), DdcErrorKind> {
+            SendDdcBus::read_segmented(self.0, target, segment, offset, buf).await
+        }
+    }
+
+    impl DdcHandle for View<'_> {
+        type Bus = Self;
+        fn bus(&self) -> &Self {
+            self
+        }
+    }
+
+    impl SendDdcHandle for View<'_> {
+        type Bus = Self;
+        fn bus(&self) -> &Self {
+            self
+        }
+    }
+
+    #[pollster::test]
+    async fn both_adapters_take_a_copy_handle_by_value() {
+        let bus = Bus::scdc(32);
+        let view = View(&bus);
+        let plain = ScdcOverDdc::new(view).ok().unwrap();
+        assert_eq!(ScdcTransport::read(&plain, 0x07).await, Ok(0x07));
+        let send = SendScdcOverDdc::new(view).ok().unwrap();
+        assert_eq!(SendScdcTransport::read(&send, 0x08).await, Ok(0x08));
+        // A reference handle still works.
+        let by_ref = SendScdcOverDdc::new(&bus).ok().unwrap();
+        assert_eq!(SendScdcTransport::read(&by_ref, 0x09).await, Ok(0x09));
     }
 }
