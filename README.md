@@ -40,6 +40,11 @@ use hdmi_hal_async::scdc::ScdcTransport;
 struct MyAsyncI2cBackend { /* ... */ }
 # #[derive(Debug)]
 # struct MyError;
+# impl hdmi_hal_async::ddc::DdcError for MyError {
+#     fn kind(&self) -> hdmi_hal_async::ddc::DdcErrorKind {
+#         hdmi_hal_async::ddc::DdcErrorKind::Other
+#     }
+# }
 
 impl ScdcTransport for MyAsyncI2cBackend {
     type Error = MyError;
@@ -88,6 +93,11 @@ use hdmi_hal_async::scdc::SendScdcTransport;
 # struct MyThreadSafeBackend;
 # #[derive(Debug)]
 # struct MyError;
+# impl hdmi_hal_async::ddc::DdcError for MyError {
+#     fn kind(&self) -> hdmi_hal_async::ddc::DdcErrorKind {
+#         hdmi_hal_async::ddc::DdcErrorKind::Other
+#     }
+# }
 # // A stand-in with tokio::spawn's bound: the future must be `Send + 'static`.
 # mod tokio {
 #     pub fn spawn<F: core::future::Future + Send + 'static>(_future: F) {}
