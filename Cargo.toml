@@ -10,6 +10,7 @@ repository = "https://github.com/ashlar-display/hdmi-hal-async"
 homepage = "https://ashlar-display.org"
 keywords = ["ashlar", "hdmi", "no-std", "hal", "async"]
 categories = ["embedded", "hardware-support", "no-std", "no-std::no-alloc", "asynchronous"]
+include = ["src/**", "doc/**", "README.md", "CHANGELOG.md", "LICENSE"]
 
 [dependencies]
 hdmi-hal = { version = "0.6", default-features = false }

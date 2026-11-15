@@ -21,9 +21,14 @@ is fine.
 
 ## Coding standards
 
-- Run `cargo fmt` and `cargo clippy -- -D warnings` before pushing.
-- Public items need rustdoc comments (`cargo rustdoc -- -D missing_docs` must pass).
+- Run `cargo fmt` and `cargo clippy --all-targets -- -D warnings` before pushing
+  ([doc/setup.md](doc/setup.md) lists the commands CI runs).
+- Public items need rustdoc comments, and intra-doc links must resolve
+  (`cargo rustdoc --all-features -- -D warnings` must pass).
 - `#![forbid(unsafe_code)]` is enforced; no unsafe code.
+- A claim about HDMI behaviour (a rule, a default, a threshold, a register encoding) cites
+  at least two independent public implementations (repository, commit, file and line).
+  Where implementations differ, the behaviour is a setting with the majority as default.
 - All traits and public types must be usable in bare `no_std` environments. No trait
   method may require allocation.
 - All public structs and enums must be `#[non_exhaustive]`.
@@ -33,7 +38,10 @@ is fine.
 - Write commit messages in the imperative mood ("Add support for …", not "Added …").
 - Keep commits logically atomic. A PR that touches three unrelated things should be
   three commits (or three PRs).
-- CI must be green before a PR can merge: fmt, clippy, and docs.
+- CI must be green before a PR can merge: fmt, clippy, docs, the tests and the
+  bare-metal `no_std` build, the same tests and build on the MSRV (Rust 1.85), and
+  coverage must not drop more than 0.1 percentage points below the baseline (stored in
+  `.coverage-baseline`).
 
 ## Trait stability
 
@@ -44,7 +52,10 @@ known consumers in the stack.
 
 ## Publishing and downstream dependencies
 
-`hdmi-hal-async` is consumed by `culvert-async`, `plumbob-async`, and async platform
+`hdmi-hal-async` builds on [hdmi-hal](https://github.com/ashlar-display/hdmi-hal) and
+re-exports its value types, so moving to a breaking release of hdmi-hal is a breaking
+release of hdmi-hal-async, unless the version requirement keeps accepting the old release
+as well. It is consumed by `culvert-async`, `plumbob-async`, and async platform
 backend crates as a versioned dependency. Changes that add or modify public API must be
 merged, tagged, and published to crates.io before downstream crates can adopt them.
 The workflow is:
