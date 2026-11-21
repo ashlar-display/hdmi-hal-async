@@ -10,24 +10,17 @@
 
 > **Part of [Ashlar](https://ashlar-display.org)** — a display connection stack in Rust,
 > HDMI 2.1 first: from EDID parsing through mode negotiation to FRL link training.
->
-> [display-types](https://github.com/ashlar-display/display-types) ·
-> [piaf](https://github.com/ashlar-display/piaf) ·
-> [concordance](https://github.com/ashlar-display/concordance) ·
-> [cartouche](https://github.com/ashlar-display/cartouche) ·
-> [culvert](https://github.com/ashlar-display/culvert) ·
-> [plumbob](https://github.com/ashlar-display/plumbob) ·
-> [hdmi-hal](https://github.com/ashlar-display/hdmi-hal) ·
-> **hdmi-hal-async** ·
-> [hdmi-hal-i2c-dev](https://github.com/ashlar-display/hdmi-hal-i2c-dev)
+> See [all crates](https://ashlar-display.org/crates.html).
 
 Async hardware abstraction traits for the HDMI stack.
 
 `hdmi-hal-async` is the async companion to [`hdmi-hal`](https://crates.io/crates/hdmi-hal),
 following the same split as `embedded-hal` / `embedded-hal-async`. It mirrors each trait
-in `hdmi-hal` with `async fn` methods and otherwise identical signatures — `ScdcTransport`
-for raw SCDC register access and `HdmiPhy` for transmitter PHY control. Data types such as
-`EqParams` are defined in `hdmi-hal` and re-exported here rather than duplicated.
+in `hdmi-hal` with `async fn` methods and otherwise identical signatures — `DdcBus` for the
+connector's DDC bus, `ScdcTransport` for raw SCDC register access, `FrlPhy` and `TmdsPhy`
+for transmitter PHY control, `PhyPower` for its power, and `Delay` for waiting (with
+`hdmi-hal`'s `Clock`, which does not wait, re-exported). Data types such as `EqParams` are
+defined in `hdmi-hal` and re-exported here rather than duplicated.
 
 Sync consumers continue to use `hdmi-hal` directly. Async platform backends (Embassy
 drivers, async kernel drivers) implement the traits here. The two crates impose no
@@ -45,18 +38,29 @@ Implement a trait against your async hardware backend:
 use hdmi_hal_async::scdc::ScdcTransport;
 
 struct MyAsyncI2cBackend { /* ... */ }
+# #[derive(Debug)]
+# struct MyError;
+# impl hdmi_hal_async::ddc::DdcError for MyError {
+#     fn kind(&self) -> hdmi_hal_async::ddc::DdcErrorKind {
+#         hdmi_hal_async::ddc::DdcErrorKind::Other
+#     }
+# }
 
 impl ScdcTransport for MyAsyncI2cBackend {
     type Error = MyError;
 
-    async fn read(&self, reg: u8) -> Result<u8, MyError> { /* ... */ }
-    async fn write(&mut self, reg: u8, value: u8) -> Result<(), MyError> { /* ... */ }
+    async fn read(&self, reg: u8) -> Result<u8, MyError> { todo!("read one register") }
+    async fn write(&mut self, reg: u8, value: u8) -> Result<(), MyError> {
+        todo!("write one register")
+    }
 
     // One DDC transaction for the whole buffer (a length limit, if any, of at least
     // 16 bytes). A backend that cannot burst-read
     // implements this with `hdmi_hal_async::scdc::read_block_bytewise(self, reg, buf).await`
     // and says so: its reads are then one register at a time.
-    async fn read_block(&self, reg: u8, buf: &mut [u8]) -> Result<(), MyError> { /* ... */ }
+    async fn read_block(&self, reg: u8, buf: &mut [u8]) -> Result<(), MyError> {
+        todo!("read buf.len() registers from reg")
+    }
 }
 ```
 
@@ -79,19 +83,32 @@ async fn configure_frl<T: ScdcTransport>(transport: &mut T) -> Result<(), T::Err
 
 The plain traits promise nothing about their futures, so code generic over them cannot
 spawn on a multi-threaded executor. For that, each trait has a `Send` twin,
-`phy::SendHdmiPhy` and `scdc::SendScdcTransport`: the same methods, returning futures
-that are `Send`, with errors that are `Send`. A transport twin is also `Sync`, because
-`read` takes `&self`.
+`phy::SendFrlPhy`, `phy::SendTmdsPhy`, `phy::SendPhyPower`, `scdc::SendScdcTransport`,
+`ddc::SendDdcBus` and `time::SendDelay`: the same methods, returning futures that are
+`Send`, with errors (where the trait has them) that are `Send`. The transport and bus twins
+are also `Sync`, because their methods take `&self`.
 
 ```rust
 use hdmi_hal_async::scdc::SendScdcTransport;
+# struct MyThreadSafeBackend;
+# #[derive(Debug)]
+# struct MyError;
+# impl hdmi_hal_async::ddc::DdcError for MyError {
+#     fn kind(&self) -> hdmi_hal_async::ddc::DdcErrorKind {
+#         hdmi_hal_async::ddc::DdcErrorKind::Other
+#     }
+# }
+# // A stand-in with tokio::spawn's bound: the future must be `Send + 'static`.
+# mod tokio {
+#     pub fn spawn<F: core::future::Future + Send + 'static>(_future: F) {}
+# }
 
 impl SendScdcTransport for MyThreadSafeBackend {
     type Error = MyError;
 
-    async fn read(&self, reg: u8) -> Result<u8, MyError> { /* ... */ }
-    async fn write(&mut self, reg: u8, value: u8) -> Result<(), MyError> { /* ... */ }
-    async fn read_block(&self, reg: u8, buf: &mut [u8]) -> Result<(), MyError> { /* ... */ }
+    async fn read(&self, reg: u8) -> Result<u8, MyError> { todo!() }
+    async fn write(&mut self, reg: u8, value: u8) -> Result<(), MyError> { todo!() }
+    async fn read_block(&self, reg: u8, buf: &mut [u8]) -> Result<(), MyError> { todo!() }
 }
 
 fn spawn_frl_start<T: SendScdcTransport + 'static>(mut transport: T) {
@@ -102,9 +119,14 @@ fn spawn_frl_start<T: SendScdcTransport + 'static>(mut transport: T) {
 A twin implementation is also an implementation of the plain trait, so it works with
 code written against either. Import the trait your code is bounded by: with both in
 scope, method calls on a twin implementation are ambiguous. Bound generic code by the twin
-alone, as above: adding `+ ScdcTransport` or `+ HdmiPhy`, which the twins imply anyway,
+alone, as above: adding `+ ScdcTransport` or `+ FrlPhy`, which the twins imply anyway,
 makes the compiler use that bound instead of the blanket implementation, and the futures
 are no longer known to be `Send`.
+
+## `no_std`
+
+`hdmi-hal-async` is `#![no_std]` and needs no allocator; the traits use `async fn`, so any
+executor can drive them, including those for bare-metal targets.
 
 ## Stack position
 
@@ -140,7 +162,10 @@ flowchart LR
 ## Documentation
 
 - [`doc/architecture.md`](doc/architecture.md) — trait surfaces, design principles, and async/sync split
+- [`doc/setup.md`](doc/setup.md) — build, test, `no_std`, MSRV and coverage commands
+- [`doc/testing.md`](doc/testing.md) — what the tests check and how CI runs them
 - [`doc/roadmap.md`](doc/roadmap.md) — planned features and future work
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — how to contribute, and trait stability
 
 ## Verifying releases
 

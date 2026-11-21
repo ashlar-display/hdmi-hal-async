@@ -1,6 +1,6 @@
 [package]
 name = "hdmi-hal-async"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.85"
 readme = "README.md"
@@ -10,10 +10,12 @@ repository = "https://github.com/ashlar-display/hdmi-hal-async"
 homepage = "https://ashlar-display.org"
 keywords = ["ashlar", "hdmi", "no-std", "hal", "async"]
 categories = ["embedded", "hardware-support", "no-std", "no-std::no-alloc", "asynchronous"]
+include = ["src/**", "doc/**", "README.md", "CHANGELOG.md", "LICENSE"]
 
 [dependencies]
-hdmi-hal = { version = "0.6", default-features = false }
+hdmi-hal = { version = "0.7", default-features = false }
 display-types = { version = ">=0.4.3, <0.6", default-features = false }
 
 [dev-dependencies]
 pollster = { version = "0.3", features = ["macro"] }
+embedded-hal-async = "1.0"

@@ -10,27 +10,43 @@ checksum = "843867be96c8daad0d758b57df9392b6d8d271134fce549de6ce169ff98a92af"
 
 [[package]]
 name = "display-types"
-version = "0.4.3"
+version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6b7b3c2dedb89bb093a6022e7bf2eb2e3d9f626f407212a487b74aacf8b9e584"
+checksum = "c2a14d4076790bab27f37a48c0e8fb29993ec8254effcb930b9dab9df29040e2"
 dependencies = [
  "bitflags",
 ]
 
 [[package]]
-name = "hdmi-hal"
-version = "0.6.0"
+name = "embedded-hal"
+version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "33358dac26d307b3111dec4109fb11f3be6470d688f686e5979879822a76c0bf"
+checksum = "361a90feb7004eca4019fb28352a9465666b24f840f5c3cddf0ff13920590b89"
+
+[[package]]
+name = "embedded-hal-async"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0c4c685bbef7fe13c3c6dd4da26841ed3980ef33e841cddfa15ce8a8fb3f1884"
+dependencies = [
+ "embedded-hal",
+]
+
+[[package]]
+name = "hdmi-hal"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4f6f586de7562829805e036c9d35d5ccc67949933c6112240c03fbb6e30e0f09"
 dependencies = [
  "display-types",
 ]
 
 [[package]]
 name = "hdmi-hal-async"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "display-types",
+ "embedded-hal-async",
  "hdmi-hal",
  "pollster",
 ]

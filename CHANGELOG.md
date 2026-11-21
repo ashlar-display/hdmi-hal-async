@@ -7,6 +7,141 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-21
+
+### Breaking changes
+
+- **Requires hdmi-hal 0.7**, its breaking release: the hdmi-hal types this crate re-exports
+  and builds on are 0.7's.
+
+- **`HdmiPhy` and `SendHdmiPhy` are renamed `FrlPhy` and `SendFrlPhy`**, with no alias, as
+  in hdmi-hal. `set_frl_rate(HdmiForumFrl::NotSupported)` now means "FRL off" and enters no
+  other mode; entering TMDS is `TmdsPhy::configure`'s. `FrlPhy::Error` is bounded by
+  `core::fmt::Debug` and `SendFrlPhy::Error` by `Debug + Send`, as for the other PHY traits.
+- **`set_scrambling` moves from `FrlPhy` and `SendFrlPhy` to `TmdsPhy` and `SendTmdsPhy`**,
+  with the same meaning, as in hdmi-hal.
+- **`ScdcTransport::Error` is bounded by `DdcError`, and `SendScdcTransport::Error` by
+  `DdcError + Send`**, as in hdmi-hal: every transport error carries a `DdcErrorKind`.
+  `DdcError` is implemented for `Infallible`, `()` and `DdcErrorKind`; a transport with its
+  own error type implements `DdcError::kind` for it.
+
+### Added
+
+- **`cancel::Cancel` and `NoCancel`**, re-exported from hdmi-hal: the flag that asks a
+  procedure to stop between its calls, the same for sync and async procedures, since
+  reading it does not wait.
+- **`ColorBitDepth` and `ColorFormat` re-exported** from display-types, under `phy` and at
+  the crate root, as in hdmi-hal: `TmdsVideo` uses them, so a `TmdsPhy` implementation
+  needs no direct display-types dependency.
+- **`time` module: the async `Delay` and its `Send` twin `SendDelay`**, with hdmi-hal's
+  contract (wait at least the duration given; infallible), and hdmi-hal's `Timestamp` and
+  `Clock` re-exported: reading a clock does not wait, so it stays neither `async` nor
+  fallible. Its cancellation clause: a dropped delay has done nothing that needs undoing.
+  The module docs show a `Delay` over embedded-hal-async's `DelayNs`; the crate itself
+  does not depend on it.
+- **`phy::PhyPower`, the async PHY power trait, and its `Send` twin `SendPhyPower`**, with
+  hdmi-hal's contract: `power_on` (output stopped, no mode entered) and `power_off` (no mode
+  left), both callable in any state; a trait of its own, not a supertrait of the mode
+  traits. Its cancellation clause: after a dropped call the power state is unknown, and
+  `power_off` again recovers, or the implementation says how to.
+- **A cancellation clause for `FrlPhy` and `SendFrlPhy`**, as the other async traits have:
+  a dropped call may or may not have applied its setting; each method sets a whole state,
+  so calling it again with the state wanted recovers, or the implementation says how to.
+- **`phy::TmdsPhy`, the async TMDS PHY, and its `Send` twin `SendTmdsPhy`**, with
+  hdmi-hal's contract: `capabilities` (a plain `fn`), and `async` `configure`,
+  `set_scrambling`, `start_output` and `stop_output`. Its cancellation clause: after a
+  dropped call the rate and ratio, the scrambler state or whether the output runs are
+  unknown, and `stop_output`, `configure` then `set_scrambling` recover any of them, or
+  the implementation says how. `configure` leaves the scrambler state unspecified; callers
+  set it after `configure`. `TmdsClockRatio`, `TmdsPhyConfig`, `TmdsVideo` and `TmdsPhyCapabilities` are
+  re-exported from hdmi-hal, under `phy` and at the crate root.
+- **`ddc` module: the async `DdcBus` and its `Send` twin `SendDdcBus`**, with hdmi-hal's
+  contract (`write`, `write_read`, `read` on any 7-bit address, the E-DDC `read_segmented`,
+  one call one transaction, shared through `&self`) and the cancellation clause the other
+  async traits have: a dropped call leaves the bus usable or the implementation says so, and
+  the contents of `buf` are then unspecified. `capabilities()` is a plain `fn`. hdmi-hal's
+  `DdcError`, `DdcErrorKind`, `NoAcknowledgeSource`, `EddcTarget`, `DdcCapabilities`, the
+  bus's addresses and `is_usable_address` are re-exported from `ddc`. There is no forwarding
+  implementation for `&B`: next to the twin's blanket implementation it would conflict;
+  users share a bus through handles.
+- **`scdc::ScdcOverDdc`**, `ScdcTransport` over a `DdcBus`, and **`scdc::SendScdcOverDdc`**,
+  `SendScdcTransport` over a `SendDdcBus`, for code bounded by the `Send` twins (one generic
+  type cannot implement both traits). Both hold a handle to the bus and return it from `new`
+  and `bytewise` when the bus cannot serve SCDC.
+- **`ddc::DdcHandle` and `ddc::SendDdcHandle`**, handles to a `DdcBus` and a `SendDdcBus`:
+  implemented for every handle that dereferences to such a bus, and by a `Copy` view of a
+  bus for itself, so it is passed by value.
+- The crate's scope, as its docs now say: traits and the glue between its own traits; no
+  hardware, platform or clock implementations, no policy. The `time` module's `Delay` is a
+  trait, implemented by the platform.
+
+### Changed
+
+- **The README's Ashlar block links the stack's crate list** instead of naming every crate,
+  so it no longer goes stale on crates.io when a crate is added.
+
+### Internal
+
+- CI fails on `main`, and the publish workflow's verify job fails, when `Cargo.toml` has a
+  `[patch]` section: the prototype patches hdmi-hal to an unreleased commit, and
+  `cargo package` drops `[patch]`, so a release made with it would not build.
+- `embedded-hal-async` 1.0 is a dev-dependency, for the `time` module's documentation
+  example of a `Delay` over `DelayNs`; it does not reach users.
+- **The README's Rust examples run as doctests** (`ReadmeDoctests` in `lib.rs`, compiled
+  only for `cargo test`), so they are checked against the traits. The backend examples are
+  sketches: their types are defined (hidden) and their bodies are `todo!()`; the
+  multi-threaded example spawns through a hidden stand-in with `tokio::spawn`'s
+  `Send + 'static` bound, so the doctest checks that the `Send` twin's futures can be
+  spawned.
+- **The published `.crate` holds only what the crate needs**: `include` in `Cargo.toml`
+  limits it to the sources, `doc/`, the README, changelog and license; it also shipped the
+  CI workflows, Dependabot configuration and coverage baseline.
+- **`#![deny(missing_docs)]` in `lib.rs`**: an undocumented public item fails a local
+  build, not only CI's rustdoc step.
+- **CI runs with a read-only token by default**: `ci.yml` sets `permissions: contents: read`;
+  the coverage job keeps the write permissions it needs to open its ratchet PR. The test job
+  ran with the repository's default token permissions.
+- **CI's test job does not keep the checkout's git credentials** (`persist-credentials:
+  false`); it never pushes. The coverage job keeps them to push its ratchet branch.
+- **CI fails on `main` when `Cargo.toml` has a `[patch]` section**: `cargo package` drops
+  it, so a release built with one would not build from crates.io.
+- **Clippy lints the tests too** (`--all-targets`), in CI and in the publish workflow's
+  `verify` job; it linted only the library.
+- **rustdoc runs with `-D warnings`**, as docs.rs builds, in CI and in the publish
+  workflow's `verify` job: `-D missing_docs` alone let broken intra-doc links through.
+- **The MSRV is checked**: an `MSRV` job in CI and in the publish workflow (which waits for
+  it) runs the tests and the bare-metal build on the `rust-version` from `Cargo.toml`
+  (1.85) with `cargo msrv verify`; the crate declared it, and nothing checked it.
+- **The coverage job's cache is keyed on the Rust version** as well as `Cargo.lock`, so a
+  `target/` built by an older Rust is not restored: `cargo llvm-cov clean --workspace`
+  leaves its instrumented binaries behind, and the report would count their lines as
+  uncovered (it did so in other Ashlar crates after the update to Rust 1.100).
+- **`doc/testing.md` describes the tests**: what each module's unit tests check, how the
+  README's examples are compiled, the builds CI runs and the coverage ratchet.
+- **`doc/setup.md` lists the checks CI runs**: clippy over all targets, rustdoc with
+  `-D warnings`, the tests, the bare-metal build and the MSRV check.
+- **`CONTRIBUTING.md` matches the CI checks** (clippy over all targets, rustdoc with
+  `-D warnings`, the tests, the bare-metal build, the MSRV and coverage), and its
+  publishing section says that hdmi-hal-async re-exports hdmi-hal's value types.
+- **The README's documentation list links `doc/setup.md`, `doc/testing.md` and
+  `CONTRIBUTING.md`.**
+- **The publish workflow's `verify` job fails on a `[patch]` section** too, as `ci.yml`
+  does on `main`: the release does not wait for `main`'s CI.
+- **`CONTRIBUTING.md` states the provenance rule** for claims about HDMI behaviour (two
+  independent public implementations, cited), and `CONTRIBUTING.md` and `doc/setup.md`
+  give the coverage tolerance as 0.1 percentage points, as CI checks it, not 0.1%.
+- **The README says the crate is `no_std`** and needs no allocator.
+- **The MSRV job shows why it failed**: `cargo msrv verify` runs without
+  `--output-format minimal`, which printed only `true` or `false` and dropped the compiler
+  error.
+- **The docs say when a dependency's breaking release is one of this crate's** (not when
+  the version requirement keeps accepting the old release), give the coverage tolerance as
+  0.1 percentage points everywhere, and `doc/setup.md` installs the cargo-msrv version CI
+  pins (0.19.6).
+- **`doc/setup.md` says to measure the coverage baseline with the Rust version CI uses**:
+  Rust versions count lines differently, so a baseline measured with another version can
+  fail CI without a change in coverage.
+
 ## [0.3.1] - 2026-11-03
 
 ### Changed
