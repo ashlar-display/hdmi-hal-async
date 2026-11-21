@@ -43,7 +43,7 @@ dependencies = [
 
 [[package]]
 name = "hdmi-hal-async"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "display-types",
  "embedded-hal-async",
