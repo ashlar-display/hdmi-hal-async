@@ -13,8 +13,9 @@ categories = ["embedded", "hardware-support", "no-std", "no-std::no-alloc", "asy
 include = ["src/**", "doc/**", "README.md", "CHANGELOG.md", "LICENSE"]
 
 [dependencies]
-hdmi-hal = { version = "0.6", default-features = false }
+hdmi-hal = { version = "0.7", default-features = false }
 display-types = { version = ">=0.4.3, <0.6", default-features = false }
 
 [dev-dependencies]
 pollster = { version = "0.3", features = ["macro"] }
+embedded-hal-async = "1.0"
