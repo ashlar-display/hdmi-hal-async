@@ -1037,5 +1037,20 @@ mod tests {
         // A reference handle still works.
         let by_ref = SendScdcOverDdc::new(&bus).ok().unwrap();
         assert_eq!(SendScdcTransport::read(&by_ref, 0x09).await, Ok(0x09));
+        // The view forwards every call to its bus.
+        assert_eq!(
+            SendDdcBus::write(&view, SCDC, &[0x30, 0x01]).await,
+            SendDdcBus::write(&bus, SCDC, &[0x30, 0x01]).await
+        );
+        let (mut through_view, mut direct) = ([0u8; 1], [0u8; 1]);
+        assert_eq!(
+            SendDdcBus::read(&view, SCDC, &mut through_view).await,
+            SendDdcBus::read(&bus, SCDC, &mut direct).await
+        );
+        assert_eq!(
+            SendDdcBus::read_segmented(&view, EddcTarget::Edid, 0, 0, &mut through_view).await,
+            SendDdcBus::read_segmented(&bus, EddcTarget::Edid, 0, 0, &mut direct).await
+        );
+        assert_eq!(through_view, direct);
     }
 }
