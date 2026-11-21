@@ -13,15 +13,9 @@ categories = ["embedded", "hardware-support", "no-std", "no-std::no-alloc", "asy
 include = ["src/**", "doc/**", "README.md", "CHANGELOG.md", "LICENSE"]
 
 [dependencies]
-hdmi-hal = { version = "0.6", default-features = false }
+hdmi-hal = { version = "0.7", default-features = false }
 display-types = { version = ">=0.4.3, <0.6", default-features = false }
 
 [dev-dependencies]
 pollster = { version = "0.3", features = ["macro"] }
 embedded-hal-async = "1.0"
-
-# Prototype against hdmi-hal's unreleased breaking release: a pushed
-# commit of its feat/tmds-phy branch, moved by hand. Removed when hdmi-hal is released; CI
-# on main and the publish workflow fail while it is here.
-[patch.crates-io]
-hdmi-hal = { git = "https://github.com/ashlar-display/hdmi-hal", rev = "ee13fc9c8faee2ec491275dd76d493ac67627e28" }

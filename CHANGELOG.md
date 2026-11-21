@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking changes
 
+- **Requires hdmi-hal 0.7**, its breaking release: the hdmi-hal types this crate re-exports
+  and builds on are 0.7's.
+
 - **`HdmiPhy` and `SendHdmiPhy` are renamed `FrlPhy` and `SendFrlPhy`**, with no alias, as
   in hdmi-hal. `set_frl_rate(HdmiForumFrl::NotSupported)` now means "FRL off" and enters no
   other mode; entering TMDS is `TmdsPhy::configure`'s. `FrlPhy::Error` is bounded by
