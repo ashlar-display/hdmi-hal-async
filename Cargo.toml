@@ -17,5 +17,5 @@ hdmi-hal = { version = "0.7", default-features = false }
 display-types = { version = ">=0.4.3, <0.6", default-features = false }
 
 [dev-dependencies]
-pollster = { version = "0.3", features = ["macro"] }
+pollster = { version = "1.0", features = ["macro"] }
 embedded-hal-async = "1.0"
